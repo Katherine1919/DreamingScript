@@ -40,16 +40,6 @@ run_privileged() {
   fi
 }
 
-try_run_privileged() {
-  if [[ "$(id -u)" -eq 0 ]]; then
-    "$@"
-  elif command_exists sudo; then
-    sudo "$@"
-  else
-    return 1
-  fi
-}
-
 install_package() {
   local package="$1"
 
@@ -83,20 +73,34 @@ ollama_is_running() {
   curl -fsS --connect-timeout 3 --max-time 5 "${OLLAMA_BASE_URL%/}/api/tags" >/dev/null 2>&1
 }
 
-start_ollama() {
-  if ollama_is_running; then
-    log "Ollama 服务已在运行。"
-    return 0
-  fi
+systemd_ollama_available() {
+  command_exists systemctl && systemctl list-unit-files ollama.service >/dev/null 2>&1
+}
 
-  log "Ollama endpoint 当前不可访问，正在尝试启动服务。"
-  if command_exists systemctl && systemctl list-unit-files ollama.service >/dev/null 2>&1; then
-    if ! try_run_privileged systemctl enable --now ollama; then
-      warning "systemd 启动 Ollama 失败，将尝试后台启动。"
-      nohup env OLLAMA_HOST="$OLLAMA_BASE_URL" ollama serve > "$OPENCLAW_HOME/ollama.log" 2>&1 &
-    fi
+configure_ollama_cpu_only() {
+  local override_dir="/etc/systemd/system/ollama.service.d"
+  local override_path="$override_dir/cpu-only.conf"
+  local temp_override
+
+  temp_override="$(mktemp)"
+  printf '[Service]\nEnvironment="OLLAMA_LLM_LIBRARY=%s"\n' "$OLLAMA_LLM_LIBRARY" > "$temp_override"
+  run_privileged mkdir -p "$override_dir"
+  run_privileged install -m 0644 "$temp_override" "$override_path"
+  rm -f "$temp_override"
+  run_privileged systemctl daemon-reload
+  log "Ollama systemd 服务已配置为 CPU-only：$OLLAMA_LLM_LIBRARY"
+}
+
+start_ollama() {
+  if systemd_ollama_available; then
+    configure_ollama_cpu_only
+    run_privileged systemctl enable ollama
+    run_privileged systemctl restart ollama
+  elif ollama_is_running; then
+    abort "检测到非 systemd 管理的 Ollama 已在运行，无法确认 CPU-only。请停止该进程后重新运行本脚本。"
   else
-    nohup env OLLAMA_HOST="$OLLAMA_BASE_URL" ollama serve > "$OPENCLAW_HOME/ollama.log" 2>&1 &
+    log "Ollama endpoint 当前不可访问，正在以 CPU-only 模式后台启动服务。"
+    nohup env OLLAMA_HOST="$OLLAMA_BASE_URL" OLLAMA_LLM_LIBRARY="$OLLAMA_LLM_LIBRARY" ollama serve > "$OPENCLAW_HOME/ollama.log" 2>&1 &
   fi
 
   local waited=0
@@ -116,6 +120,17 @@ start_ollama() {
   abort "无法连接 Ollama endpoint：${OLLAMA_BASE_URL%/}"
 }
 
+initialize_memory_workspace() {
+  mkdir -p "$MEMORY_DIR"
+  if [[ ! -e "$MEMORY_FILE" ]]; then
+    : > "$MEMORY_FILE"
+    chmod 600 "$MEMORY_FILE"
+    log "已创建空记忆文件：$MEMORY_FILE"
+  else
+    log "记忆文件已存在，保留原内容：$MEMORY_FILE"
+  fi
+}
+
 write_setup_notes() {
   cat > "$SETUP_NOTES_PATH" <<EOF
 # OpenClaw Dreaming + Ollama Embedding 配置记录
@@ -126,7 +141,9 @@ write_setup_notes() {
 - memorySearch.provider: \`ollama\`
 - memorySearch.model: \`$EMBEDDING_MODEL\`
 - Ollama endpoint: \`${OLLAMA_BASE_URL%/}\`
+- Ollama runtime: CPU-only (\`OLLAMA_LLM_LIBRARY=$OLLAMA_LLM_LIBRARY\`)
 - OpenClaw config path: \`$CONFIG_PATH\`
+- Memory directory: \`$MEMORY_DIR\`
 - Backup path: \`$BACKUP_PATH\`
 
 ## 验证命令
@@ -190,9 +207,12 @@ EMBEDDING_MODEL="${EMBEDDING_MODEL:-nomic-embed-text}"
 DREAMING_TIMEZONE="${DREAMING_TIMEZONE:-Asia/Shanghai}"
 DREAMING_FREQUENCY="${DREAMING_FREQUENCY:-0 3 * * *}"
 OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
+OLLAMA_LLM_LIBRARY="${OLLAMA_LLM_LIBRARY:-cpu}"
 MEMORY_AGENT="${MEMORY_AGENT:-default}"
 OPENCLAW_HOME="$HOME/.openclaw"
 SETUP_NOTES_PATH="$OPENCLAW_HOME/dreaming-ollama-embedding-setup.md"
+MEMORY_DIR="$OPENCLAW_HOME/workspace/$MEMORY_AGENT/memory"
+MEMORY_FILE="$MEMORY_DIR/MEMORY.md"
 
 require_linux
 command_exists openclaw || abort "未找到 openclaw 命令。请先安装 OpenClaw 并确认它已加入 PATH。"
@@ -236,6 +256,8 @@ start_ollama
 log "正在拉取 embedding 模型：$EMBEDDING_MODEL"
 env OLLAMA_HOST="$OLLAMA_BASE_URL" ollama pull "$EMBEDDING_MODEL" || \
   abort "拉取 embedding 模型失败：$EMBEDDING_MODEL。请运行 ollama pull \"$EMBEDDING_MODEL\" 排查。"
+
+initialize_memory_workspace
 
 CONFIG_DIR="$(dirname "$CONFIG_PATH")"
 TEMP_CONFIG="$(mktemp "$CONFIG_DIR/.openclaw.json.tmp.XXXXXX")"
@@ -325,6 +347,10 @@ Memory embedding:
 provider=ollama
 model=$EMBEDDING_MODEL
 baseUrl=${OLLAMA_BASE_URL%/}
+runtime=CPU-only ($OLLAMA_LLM_LIBRARY)
+
+Memory workspace:
+$MEMORY_DIR
 
 Next commands:
 openclaw memory status --deep
