@@ -18,6 +18,36 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+expand_home_path() {
+  case "$1" in
+    "~") printf '%s' "$HOME" ;;
+    "~/"*) printf '%s/%s' "$HOME" "${1#\~/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+resolve_workspace() {
+  local agent="${MEMORY_AGENT:-}"
+  local workspace="${OPENCLAW_WORKSPACE:-}"
+
+  if [[ -z "$agent" && -f "$CONFIG_PATH" ]] && command_exists jq; then
+    agent="$(jq -r '([.agents.list[]? | select(.default == true) | .id][0] // .agents.list[0].id // empty)' "$CONFIG_PATH")"
+  fi
+  agent="${agent:-main}"
+
+  if [[ -z "$workspace" && -f "$CONFIG_PATH" ]] && command_exists jq; then
+    workspace="$(jq -r --arg agent "$agent" '([.agents.list[]? | select(.id == $agent) | .workspace][0] // .agents.defaults.workspace // empty)' "$CONFIG_PATH")"
+  fi
+  if [[ -z "$workspace" ]]; then
+    if [[ "$agent" == "main" ]]; then
+      workspace="$OPENCLAW_HOME/workspace"
+    else
+      workspace="$OPENCLAW_HOME/workspace-$agent"
+    fi
+  fi
+  expand_home_path "$workspace"
+}
+
 run_privileged() {
   if [[ -n "$ROLLBACK_SYSTEM_ROOT" ]]; then
     "$@"
@@ -129,7 +159,8 @@ clean_openclaw_artifacts() {
 
 CONFIG_PATH="${OPENCLAW_CONFIG:-$HOME/.openclaw/openclaw.json}"
 OPENCLAW_HOME="$HOME/.openclaw"
-SETUP_NOTES_PATH="${OPENCLAW_WORKSPACE:-$(dirname "$CONFIG_PATH")}/dreaming-official-ollama-embedding-setup.md"
+RESOLVED_WORKSPACE="$(resolve_workspace)"
+SETUP_NOTES_PATH="$RESOLVED_WORKSPACE/dreaming-official-ollama-embedding-setup.md"
 LEGACY_SETUP_NOTES_PATH="$OPENCLAW_HOME/dreaming-ollama-embedding-setup.md"
 ROLLBACK_SYSTEM_ROOT="${ROLLBACK_SYSTEM_ROOT:-}"
 

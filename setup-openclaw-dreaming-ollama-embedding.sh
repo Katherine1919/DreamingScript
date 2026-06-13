@@ -6,6 +6,40 @@ warn() { printf '[WARNING] %s\n' "$*" >&2; }
 abort() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+expand_home_path() {
+  case "$1" in
+    "~") printf '%s' "$HOME" ;;
+    "~/"*) printf '%s/%s' "$HOME" "${1#\~/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+resolve_agent_and_workspace() {
+  local configured_agent configured_workspace
+
+  if [[ -z "$MEMORY_AGENT" && -f "$CONFIG_PATH" ]]; then
+    configured_agent="$(jq -r '([.agents.list[]? | select(.default == true) | .id][0] // .agents.list[0].id // empty)' "$CONFIG_PATH")"
+    MEMORY_AGENT="$configured_agent"
+  fi
+  MEMORY_AGENT="${MEMORY_AGENT:-main}"
+
+  if [[ -z "$OPENCLAW_WORKSPACE" && -f "$CONFIG_PATH" ]]; then
+    configured_workspace="$(jq -r --arg agent "$MEMORY_AGENT" '([.agents.list[]? | select(.id == $agent) | .workspace][0] // .agents.defaults.workspace // empty)' "$CONFIG_PATH")"
+    OPENCLAW_WORKSPACE="$configured_workspace"
+  fi
+  if [[ -z "$OPENCLAW_WORKSPACE" ]]; then
+    if [[ "$MEMORY_AGENT" == "main" ]]; then
+      OPENCLAW_WORKSPACE="$OPENCLAW_HOME/workspace"
+    else
+      OPENCLAW_WORKSPACE="$OPENCLAW_HOME/workspace-$MEMORY_AGENT"
+    fi
+  fi
+  OPENCLAW_WORKSPACE="$(expand_home_path "$OPENCLAW_WORKSPACE")"
+
+  log "目标 Agent：$MEMORY_AGENT"
+  log "目标 workspace：$OPENCLAW_WORKSPACE"
+}
+
 run_privileged() {
   if [[ "$(id -u)" -eq 0 ]]; then
     "$@"
@@ -315,7 +349,7 @@ OS_RELEASE_FILE="${OS_RELEASE_FILE:-/etc/os-release}"
 OS_PRETTY_NAME="$(. "$OS_RELEASE_FILE" && printf '%s' "${PRETTY_NAME:-${NAME:-Linux}}")"
 log "检测到 Linux ECS：$OS_PRETTY_NAME"
 CONFIG_PATH="${OPENCLAW_CONFIG:-$HOME/.openclaw/openclaw.json}"
-OPENCLAW_WORKSPACE="${OPENCLAW_WORKSPACE:-$(dirname "$CONFIG_PATH")}"
+OPENCLAW_WORKSPACE="${OPENCLAW_WORKSPACE:-}"
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-nomic-embed-text}"
 DREAMING_TIMEZONE="${DREAMING_TIMEZONE:-Asia/Shanghai}"
 DREAMING_FREQUENCY="${DREAMING_FREQUENCY:-0 3 * * *}"
@@ -325,7 +359,7 @@ OLLAMA_MAX_LOADED_MODELS="${OLLAMA_MAX_LOADED_MODELS:-1}"
 OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-10m}"
 OLLAMA_LOAD_TIMEOUT="${OLLAMA_LOAD_TIMEOUT:-10m}"
 OLLAMA_MAX_QUEUE="${OLLAMA_MAX_QUEUE:-64}"
-MEMORY_AGENT="${MEMORY_AGENT:-default}"
+MEMORY_AGENT="${MEMORY_AGENT:-}"
 RUN_BACKFILL="${RUN_BACKFILL:-0}"
 STAGE_SHORT_TERM="${STAGE_SHORT_TERM:-0}"
 FORCE_REINDEX="${FORCE_REINDEX:-0}"
@@ -338,12 +372,6 @@ PROMOTE_INCLUDE_PROMOTED="${PROMOTE_INCLUDE_PROMOTED:-0}"
 PROMOTE_JSON="${PROMOTE_JSON:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 OPENCLAW_HOME="$HOME/.openclaw"
-MEMORY_DIR="$OPENCLAW_WORKSPACE/memory"
-DREAM_STATE_DIR="$MEMORY_DIR/.dreams"
-MEMORY_PATH="$OPENCLAW_WORKSPACE/MEMORY.md"
-PHASE_REPORTS_PATH="$MEMORY_DIR/dreaming/<phase>/YYYY-MM-DD.md"
-SETUP_NOTES_PATH="$OPENCLAW_WORKSPACE/dreaming-official-ollama-embedding-setup.md"
-DREAM_DIARY_PATH="$OPENCLAW_WORKSPACE/DREAMS.md"
 TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
 BACKUP_PATH=none
 PROMOTE_REPORT_PATH=none
@@ -355,14 +383,25 @@ PROMOTE_APPLY_RAN=false
 command_exists openclaw || abort "未找到 openclaw；脚本不会自动安装 OpenClaw。"
 
 if [[ "$DRY_RUN" != "1" ]]; then
-  mkdir -p "$(dirname "$CONFIG_PATH")" "$OPENCLAW_WORKSPACE" "$OPENCLAW_HOME"
+  mkdir -p "$(dirname "$CONFIG_PATH")" "$OPENCLAW_HOME"
   [[ -f "$CONFIG_PATH" ]] || printf '{}\n' > "$CONFIG_PATH"
   ensure_dependency jq
   ensure_dependency curl
   jq -e 'type == "object"' "$CONFIG_PATH" >/dev/null || abort "配置文件不是合法 JSON 对象：$CONFIG_PATH"
 else
   log "DRY_RUN=1：不会安装、写文件、改配置、重启或执行写入命令。"
+  command_exists jq || abort "DRY_RUN 需要 jq 来只读解析 Agent workspace。"
+  [[ ! -f "$CONFIG_PATH" ]] || jq -e 'type == "object"' "$CONFIG_PATH" >/dev/null || abort "配置文件不是合法 JSON 对象：$CONFIG_PATH"
 fi
+
+resolve_agent_and_workspace
+MEMORY_DIR="$OPENCLAW_WORKSPACE/memory"
+DREAM_STATE_DIR="$MEMORY_DIR/.dreams"
+MEMORY_PATH="$OPENCLAW_WORKSPACE/MEMORY.md"
+PHASE_REPORTS_PATH="$MEMORY_DIR/dreaming/<phase>/YYYY-MM-DD.md"
+SETUP_NOTES_PATH="$OPENCLAW_WORKSPACE/dreaming-official-ollama-embedding-setup.md"
+DREAM_DIARY_PATH="$OPENCLAW_WORKSPACE/DREAMS.md"
+[[ "$DRY_RUN" == "1" ]] || mkdir -p "$OPENCLAW_WORKSPACE"
 
 install_ollama
 start_ollama
