@@ -60,6 +60,30 @@ ollama_is_running() {
   curl -fsS --connect-timeout 3 --max-time 5 "${OLLAMA_BASE_URL%/}/api/tags" >/dev/null 2>&1
 }
 
+configure_ollama_cpu_tuning() {
+  local override_dir="/etc/systemd/system/ollama.service.d"
+  local override_path="$override_dir/openclaw-cpu.conf"
+  local temp_override
+
+  temp_override="$(mktemp)"
+  cat > "$temp_override" <<EOF
+[Service]
+Environment="OLLAMA_NUM_PARALLEL=$OLLAMA_NUM_PARALLEL"
+Environment="OLLAMA_MAX_LOADED_MODELS=$OLLAMA_MAX_LOADED_MODELS"
+Environment="OLLAMA_KEEP_ALIVE=$OLLAMA_KEEP_ALIVE"
+Environment="OLLAMA_LOAD_TIMEOUT=$OLLAMA_LOAD_TIMEOUT"
+Environment="OLLAMA_MAX_QUEUE=$OLLAMA_MAX_QUEUE"
+EOF
+  if ! try_run_privileged mkdir -p "$override_dir" || \
+     ! try_run_privileged install -m 0644 "$temp_override" "$override_path" || \
+     ! try_run_privileged systemctl daemon-reload; then
+    rm -f "$temp_override"
+    return 1
+  fi
+  rm -f "$temp_override"
+  log "已写入 Ollama CPU 调优：$override_path"
+}
+
 install_ollama() {
   command_exists ollama && return 0
   if [[ "$DRY_RUN" == "1" ]]; then
@@ -78,17 +102,28 @@ start_ollama() {
     log "[DRY-RUN] 将检查并启动 Ollama：$OLLAMA_BASE_URL"
     return 0
   fi
-  if ollama_is_running; then
-    log "Ollama 服务已在运行。"
-    return 0
-  fi
   if command_exists systemctl && systemctl list-unit-files ollama.service >/dev/null 2>&1; then
-    if ! try_run_privileged systemctl enable --now ollama; then
+    if ! configure_ollama_cpu_tuning || ! try_run_privileged systemctl enable --now ollama; then
       warn "systemd 启动失败，将尝试 nohup ollama serve。"
-      nohup env OLLAMA_HOST="$OLLAMA_BASE_URL" ollama serve > "$OPENCLAW_HOME/ollama.log" 2>&1 &
+      nohup env OLLAMA_HOST="$OLLAMA_BASE_URL" \
+        OLLAMA_NUM_PARALLEL="$OLLAMA_NUM_PARALLEL" \
+        OLLAMA_MAX_LOADED_MODELS="$OLLAMA_MAX_LOADED_MODELS" \
+        OLLAMA_KEEP_ALIVE="$OLLAMA_KEEP_ALIVE" \
+        OLLAMA_LOAD_TIMEOUT="$OLLAMA_LOAD_TIMEOUT" \
+        OLLAMA_MAX_QUEUE="$OLLAMA_MAX_QUEUE" \
+        ollama serve > "$OPENCLAW_HOME/ollama.log" 2>&1 &
     fi
+  elif ollama_is_running; then
+    log "Ollama 服务已在运行；非 systemd 进程将保留当前启动参数。"
+    return 0
   else
-    nohup env OLLAMA_HOST="$OLLAMA_BASE_URL" ollama serve > "$OPENCLAW_HOME/ollama.log" 2>&1 &
+    nohup env OLLAMA_HOST="$OLLAMA_BASE_URL" \
+      OLLAMA_NUM_PARALLEL="$OLLAMA_NUM_PARALLEL" \
+      OLLAMA_MAX_LOADED_MODELS="$OLLAMA_MAX_LOADED_MODELS" \
+      OLLAMA_KEEP_ALIVE="$OLLAMA_KEEP_ALIVE" \
+      OLLAMA_LOAD_TIMEOUT="$OLLAMA_LOAD_TIMEOUT" \
+      OLLAMA_MAX_QUEUE="$OLLAMA_MAX_QUEUE" \
+      ollama serve > "$OPENCLAW_HOME/ollama.log" 2>&1 &
   fi
   local waited=0
   while (( waited < 30 )); do
@@ -238,6 +273,7 @@ write_setup_notes() {
 - Dreaming model: OpenClaw current default chat model; no \`dreaming.model\` override
 - memorySearch provider/model: \`ollama\` / \`$EMBEDDING_MODEL\`
 - Ollama endpoint: \`${OLLAMA_BASE_URL%/}\`
+- Ollama CPU tuning: parallel=\`$OLLAMA_NUM_PARALLEL\`, loadedModels=\`$OLLAMA_MAX_LOADED_MODELS\`, keepAlive=\`$OLLAMA_KEEP_ALIVE\`, loadTimeout=\`$OLLAMA_LOAD_TIMEOUT\`, maxQueue=\`$OLLAMA_MAX_QUEUE\`
 - OpenClaw config: \`$CONFIG_PATH\`
 - OpenClaw workspace: \`$OPENCLAW_WORKSPACE\`
 - MEMORY.md: \`$MEMORY_PATH\`
@@ -284,6 +320,11 @@ EMBEDDING_MODEL="${EMBEDDING_MODEL:-nomic-embed-text}"
 DREAMING_TIMEZONE="${DREAMING_TIMEZONE:-Asia/Shanghai}"
 DREAMING_FREQUENCY="${DREAMING_FREQUENCY:-0 3 * * *}"
 OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
+OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-1}"
+OLLAMA_MAX_LOADED_MODELS="${OLLAMA_MAX_LOADED_MODELS:-1}"
+OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-10m}"
+OLLAMA_LOAD_TIMEOUT="${OLLAMA_LOAD_TIMEOUT:-10m}"
+OLLAMA_MAX_QUEUE="${OLLAMA_MAX_QUEUE:-64}"
 MEMORY_AGENT="${MEMORY_AGENT:-default}"
 RUN_BACKFILL="${RUN_BACKFILL:-0}"
 STAGE_SHORT_TERM="${STAGE_SHORT_TERM:-0}"
@@ -370,6 +411,13 @@ Memory embedding:
 provider=ollama
 model=$EMBEDDING_MODEL
 baseUrl=${OLLAMA_BASE_URL%/}
+
+Ollama CPU tuning:
+numParallel=$OLLAMA_NUM_PARALLEL
+maxLoadedModels=$OLLAMA_MAX_LOADED_MODELS
+keepAlive=$OLLAMA_KEEP_ALIVE
+loadTimeout=$OLLAMA_LOAD_TIMEOUT
+maxQueue=$OLLAMA_MAX_QUEUE
 
 Promote:
 preview_ran=$PROMOTE_PREVIEW_RAN
