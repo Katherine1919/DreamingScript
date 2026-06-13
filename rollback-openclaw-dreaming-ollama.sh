@@ -125,23 +125,11 @@ remove_ollama_account() {
 
 clean_openclaw_artifacts() {
   rm -f -- "$SETUP_NOTES_PATH" "$OPENCLAW_HOME/ollama.log"
-
-  if [[ -f "$MEMORY_FILE" && ! -s "$MEMORY_FILE" ]]; then
-    rm -f -- "$MEMORY_FILE"
-    rmdir "$MEMORY_DIR" 2>/dev/null || true
-    rmdir "$(dirname "$MEMORY_DIR")" 2>/dev/null || true
-    log "已删除脚本创建的空 MEMORY.md。"
-  elif [[ -e "$MEMORY_FILE" ]]; then
-    warning "MEMORY.md 包含内容，已保留：$MEMORY_FILE"
-  fi
 }
 
 CONFIG_PATH="${OPENCLAW_CONFIG:-$HOME/.openclaw/openclaw.json}"
-MEMORY_AGENT="${MEMORY_AGENT:-default}"
 OPENCLAW_HOME="$HOME/.openclaw"
 SETUP_NOTES_PATH="$OPENCLAW_HOME/dreaming-ollama-embedding-setup.md"
-MEMORY_DIR="$OPENCLAW_HOME/workspace/$MEMORY_AGENT/memory"
-MEMORY_FILE="$MEMORY_DIR/MEMORY.md"
 ROLLBACK_SYSTEM_ROOT="${ROLLBACK_SYSTEM_ROOT:-}"
 
 [[ "$(uname -s)" == "Linux" ]] || abort "此回滚脚本仅支持 Linux。"

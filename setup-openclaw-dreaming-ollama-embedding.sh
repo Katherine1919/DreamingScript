@@ -120,17 +120,6 @@ start_ollama() {
   abort "无法连接 Ollama endpoint：${OLLAMA_BASE_URL%/}"
 }
 
-initialize_memory_workspace() {
-  mkdir -p "$MEMORY_DIR"
-  if [[ ! -e "$MEMORY_FILE" ]]; then
-    : > "$MEMORY_FILE"
-    chmod 600 "$MEMORY_FILE"
-    log "已创建空记忆文件：$MEMORY_FILE"
-  else
-    log "记忆文件已存在，保留原内容：$MEMORY_FILE"
-  fi
-}
-
 write_setup_notes() {
   cat > "$SETUP_NOTES_PATH" <<EOF
 # OpenClaw Dreaming + Ollama Embedding 配置记录
@@ -143,14 +132,14 @@ write_setup_notes() {
 - Ollama endpoint: \`${OLLAMA_BASE_URL%/}\`
 - Ollama runtime: CPU-only (\`OLLAMA_LLM_LIBRARY=$OLLAMA_LLM_LIBRARY\`)
 - OpenClaw config path: \`$CONFIG_PATH\`
-- Memory directory: \`$MEMORY_DIR\`
 - Backup path: \`$BACKUP_PATH\`
+- Dreaming artifacts: OpenClaw 自动管理 workspace 根目录的 \`DREAMS.md\`（或已有 \`dreams.md\`）、\`memory/.dreams/\` 和 \`MEMORY.md\`
 
 ## 验证命令
 
 \`\`\`bash
 openclaw memory status --deep
-openclaw memory status --index --agent "$MEMORY_AGENT"
+$MEMORY_STATUS_INDEX_COMMAND
 curl -fsS "${OLLAMA_BASE_URL%/}/api/tags"
 \`\`\`
 
@@ -165,7 +154,7 @@ curl -fsS "${OLLAMA_BASE_URL%/}/api/tags"
 更换 embedding model 后需要重建索引：
 
 \`\`\`bash
-openclaw memory index --force --agent "$MEMORY_AGENT"
+$MEMORY_INDEX_FORCE_COMMAND
 \`\`\`
 
 ## 回滚方法
@@ -197,8 +186,12 @@ verify_openclaw() {
   if ! openclaw memory status --deep; then
     warning "验证命令失败：openclaw memory status --deep"
   fi
-  if ! openclaw memory status --index --agent "$MEMORY_AGENT"; then
-    warning "验证命令失败：openclaw memory status --index --agent $MEMORY_AGENT"
+  if [[ -n "$MEMORY_AGENT" ]]; then
+    if ! openclaw memory status --index --agent "$MEMORY_AGENT"; then
+      warning "验证命令失败：$MEMORY_STATUS_INDEX_COMMAND"
+    fi
+  elif ! openclaw memory status --index; then
+    warning "验证命令失败：$MEMORY_STATUS_INDEX_COMMAND"
   fi
 }
 
@@ -208,11 +201,15 @@ DREAMING_TIMEZONE="${DREAMING_TIMEZONE:-Asia/Shanghai}"
 DREAMING_FREQUENCY="${DREAMING_FREQUENCY:-0 3 * * *}"
 OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
 OLLAMA_LLM_LIBRARY="${OLLAMA_LLM_LIBRARY:-cpu}"
-MEMORY_AGENT="${MEMORY_AGENT:-default}"
+MEMORY_AGENT="${MEMORY_AGENT:-}"
 OPENCLAW_HOME="$HOME/.openclaw"
 SETUP_NOTES_PATH="$OPENCLAW_HOME/dreaming-ollama-embedding-setup.md"
-MEMORY_DIR="$OPENCLAW_HOME/workspace/$MEMORY_AGENT/memory"
-MEMORY_FILE="$MEMORY_DIR/MEMORY.md"
+MEMORY_STATUS_INDEX_COMMAND="openclaw memory status --index"
+MEMORY_INDEX_FORCE_COMMAND="openclaw memory index --force"
+if [[ -n "$MEMORY_AGENT" ]]; then
+  MEMORY_STATUS_INDEX_COMMAND="$MEMORY_STATUS_INDEX_COMMAND --agent $MEMORY_AGENT"
+  MEMORY_INDEX_FORCE_COMMAND="$MEMORY_INDEX_FORCE_COMMAND --agent $MEMORY_AGENT"
+fi
 
 require_linux
 command_exists openclaw || abort "未找到 openclaw 命令。请先安装 OpenClaw 并确认它已加入 PATH。"
@@ -256,8 +253,6 @@ start_ollama
 log "正在拉取 embedding 模型：$EMBEDDING_MODEL"
 env OLLAMA_HOST="$OLLAMA_BASE_URL" ollama pull "$EMBEDDING_MODEL" || \
   abort "拉取 embedding 模型失败：$EMBEDDING_MODEL。请运行 ollama pull \"$EMBEDDING_MODEL\" 排查。"
-
-initialize_memory_workspace
 
 CONFIG_DIR="$(dirname "$CONFIG_PATH")"
 TEMP_CONFIG="$(mktemp "$CONFIG_DIR/.openclaw.json.tmp.XXXXXX")"
@@ -349,12 +344,12 @@ model=$EMBEDDING_MODEL
 baseUrl=${OLLAMA_BASE_URL%/}
 runtime=CPU-only ($OLLAMA_LLM_LIBRARY)
 
-Memory workspace:
-$MEMORY_DIR
+Dreaming artifacts:
+managed by OpenClaw (DREAMS.md or dreams.md, memory/.dreams/, MEMORY.md)
 
 Next commands:
 openclaw memory status --deep
-openclaw memory status --index --agent $MEMORY_AGENT
-openclaw memory index --force --agent $MEMORY_AGENT
+$MEMORY_STATUS_INDEX_COMMAND
+$MEMORY_INDEX_FORCE_COMMAND
 /dreaming status
 EOF
