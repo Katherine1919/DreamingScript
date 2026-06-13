@@ -124,12 +124,13 @@ remove_ollama_account() {
 }
 
 clean_openclaw_artifacts() {
-  rm -f -- "$SETUP_NOTES_PATH" "$OPENCLAW_HOME/ollama.log"
+  rm -f -- "$SETUP_NOTES_PATH" "$LEGACY_SETUP_NOTES_PATH" "$OPENCLAW_HOME/ollama.log"
 }
 
 CONFIG_PATH="${OPENCLAW_CONFIG:-$HOME/.openclaw/openclaw.json}"
 OPENCLAW_HOME="$HOME/.openclaw"
-SETUP_NOTES_PATH="$OPENCLAW_HOME/dreaming-ollama-embedding-setup.md"
+SETUP_NOTES_PATH="${OPENCLAW_WORKSPACE:-$(dirname "$CONFIG_PATH")}/dreaming-official-ollama-embedding-setup.md"
+LEGACY_SETUP_NOTES_PATH="$OPENCLAW_HOME/dreaming-ollama-embedding-setup.md"
 ROLLBACK_SYSTEM_ROOT="${ROLLBACK_SYSTEM_ROOT:-}"
 
 [[ "$(uname -s)" == "Linux" ]] || abort "此回滚脚本仅支持 Linux。"
